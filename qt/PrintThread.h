@@ -16,11 +16,10 @@ class PrintThread : public QThread
     Q_OBJECT
 
 public:
-    explicit PrintThread(int jobImgLayerCounts = 1, QObject *parent = nullptr);
+    explicit PrintThread(int jobImgLayerCounts, QMutex* hwMutex, QObject *parent = nullptr);
     ~PrintThread();
     
     void stop();
-    bool isStopped() const;
 
 signals:
     void printStateChanged(uint state);
@@ -32,14 +31,12 @@ protected:
     void run() override;
 
 private:
-    bool m_stop;
-    mutable QMutex m_mutex;
+    QMutex* m_hwMutex;      // Mutex for hardware access, shared with other threads
+    QMutex m_internalMutex; // Mutex for internal state of this class
     QWaitCondition m_condition;
-    int m_jobImgLayerCounts;  // 作业图像图层数量
-    bool m_mutexAcquired;     // 标记Windows互斥锁是否已获取
     
-    bool shouldStop() const;
-    void ensureMutexReleased();  // 确保互斥锁释放
+    volatile bool m_stop;
+    int m_jobImgLayerCounts;  // 作业图像图层数量
 };
 
 #endif // PRINTTHREAD_H

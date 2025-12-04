@@ -16,11 +16,10 @@ class MonitorThread : public QThread
     Q_OBJECT
 
 public:
-    explicit MonitorThread(QObject *parent = nullptr);
+    explicit MonitorThread(QMutex* hwMutex, QObject *parent = nullptr);
     ~MonitorThread();
     
     void stop();
-    bool isStopped() const;
     void setCloseAutoCheck(bool close);  // 设置是否关闭自动检查
 
 signals:
@@ -32,15 +31,12 @@ protected:
     void run() override;
 
 private:
-    bool m_stop;
-    mutable QMutex m_mutex;
+    QMutex* m_hwMutex;      // Mutex for hardware access, shared with other threads
+    QMutex m_internalMutex; // Mutex for internal state of this class
     QWaitCondition m_condition;
-    bool m_closeAutoCheck;  // 是否关闭自动检查
     
-    bool shouldStop() const;
-    bool getCloseAutoCheck() const;
-    void checkDeviceStatus();
-    void updateDeviceInfo();
+    volatile bool m_stop;
+    bool m_closeAutoCheck;  // 是否关闭自动检查
 };
 
 #endif // MONITORTHREAD_H
