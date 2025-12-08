@@ -9,11 +9,15 @@ RYUSR_PARAM g_sysParam;
 PRTJOB_ITEM g_testJob;
 PRTIMG_LAYER g_PrtImgLayer;
 RYCalbrationParam g_Calbration;
+MOV_Config g_movConfig;  // 运动控制配置
 LPPRINTER_INFO g_pSysInfo = nullptr;
 bool g_bPHValid[MAX_PH_CNT] = { false };
 HANDLE g_PrtMutex = INVALID_HANDLE_VALUE;
 UINT g_nPHType = 0;
 bool g_IsRoladWave = false;
+int PrtBuffNum = 0;  // 打印缓冲区计数
+QByteArray g_prtData[MAX_COLORS];  // 全局图像数据缓冲区
+int g_prtDataSize = 0;  // 全局图像数据大小
 
 /**
  * @brief 初始化图像图层信息
@@ -68,6 +72,27 @@ void InitCalibrationInfo()
     g_Calbration.nPrtDir = 1;
 }
 
+/**
+ * @brief 初始化运动控制配置
+ */
+void InitMoveConfig()
+{
+    memset(&g_movConfig, 0, sizeof(MOV_Config));
+    g_movConfig.fxSysdpi = 600.0f;
+    g_movConfig.fySysdpi = 600.0f;
+    g_movConfig.fxMovSpd = 10.0f;
+    g_movConfig.fyMovSpd = 10.0f;
+    g_movConfig.fxMovAcc = 0.5f;
+    g_movConfig.fyMovAcc = 0.5f;
+    g_movConfig.fxMovUnit = 1.0f;
+    g_movConfig.fyMovUnit = 1.0f;
+    g_movConfig.fxMovRate = 1.0f;
+    g_movConfig.fyMovRate = 1.0f;
+    g_movConfig.fxIoOption = 0.0f;
+    g_movConfig.fyIoOption = 0.0f;
+    g_movConfig.fMovBuf = 50.0f;
+}
+
 int main(int argc, char *argv[])
 {
     // 创建应用程序
@@ -86,6 +111,7 @@ int main(int argc, char *argv[])
     InitImgLayerInfo();
     InitJobInfo();
     InitCalibrationInfo();
+    InitMoveConfig();
     
     // 创建主窗口
     MainWindow window;

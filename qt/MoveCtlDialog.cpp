@@ -1,8 +1,9 @@
 #include "MoveCtlDialog.h"
 #include "ui_MoveCtlDialog.h"
+#include "../Inc/RYPrtCtler.h"
 
-// Define the global variable, which will be linked from the main application
-MOV_Config g_movConfig;
+// 外部全局变量声明
+extern MOV_Config g_movConfig;
 
 MoveCtlDialog::MoveCtlDialog(QWidget *parent) :
     QDialog(parent),

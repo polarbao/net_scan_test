@@ -98,9 +98,69 @@ void PrintInfoTreeWidget::updateVTListInfo()
         return;
     }
     
-    // 更新VT列表信息（温度、电压等）
-    // 这里需要根据具体的树形结构来实现
-    // 对应MFC版本的UpdateVTListInfo()函数
+    clear(); // Clear existing items
+
+    int nTmpCount = g_pSysInfo->clrph_info[0].nTmpQueryCnt;
+    int nVolCount = g_pSysInfo->clrph_info[0].nVolQueryCnt;
+    int nSplit = 1;
+    if (g_pSysInfo->clrph_info[0].nPhType == 19) // XAAR2001
+        nSplit = 4;
+    
+    if (g_pSysInfo->clrph_info[0].nPhType == 28) // s3200
+    {
+        nVolCount = 2;
+    }
+
+    // Dynamic column headers setup
+    QStringList headers;
+    headers << "打印卡/驱动板"; // Column 0
+    for (int i = 0; i < nTmpCount; i++) {
+        headers << QString("温度T%1").arg(i + 1);
+    }
+    for (int i = 0; i < nVolCount; i++) {
+        headers << QString("电压V%1").arg(i + 1);
+    }
+    headers << "FPGA版本";
+    headers << "MCU版本";
+    initColumns(headers);
+
+    QTreeWidgetItem *rootItem = createRootItem("打印头");
+    
+    for (int p = 0; p < MAX_MCP_CNT; p++) {
+        if (g_pSysInfo->nMcpValidMask & (1 << p)) {
+            QString prtCardName = QString("打印卡%1").arg(p + 1);
+            QTreeWidgetItem *prtCardItem = createChildItem(rootItem, prtCardName);
+            
+            for (int d = 0; d < MCP_DRV_CNT; d++) {
+                if (g_pSysInfo->nMcpDrvLinkMask[p] & (1 << d)) {
+                    for (int s = 0; s < nSplit; s++) {
+                        QString driverBoardName = QString("驱动板%1").arg(d + 1);
+                        QTreeWidgetItem *driverBoardItem = createChildItem(prtCardItem, driverBoardName);
+                        
+                        int currentColumn = 1; // Start from column 1 for data
+
+                        // Populate temperature values
+                        for (int t = 0; t < nTmpCount; t++) {
+                            setItemText(driverBoardItem, currentColumn++, QString("%.1f").arg(g_pSysInfo->sysDrvInfo[p][d].phinfo[0].fCurTemp[t]));
+                        }
+                        
+                        // Populate voltage values
+                        for (int v = 0; v < nVolCount; v++) {
+                            setItemText(driverBoardItem, currentColumn++, QString("%.1f").arg(g_pSysInfo->sysDrvInfo[p][d].phinfo[0].fCurVol[s * nVolCount + v]));
+                        }
+
+                        // Populate FPGA and MCU versions
+                        setItemText(driverBoardItem, currentColumn++, QString("%1").arg(g_pSysInfo->sysDrvInfo[p][d].nFpgaVersion, 0, 16).toUpper());
+                        setItemText(driverBoardItem, currentColumn++, QString("%1").arg(g_pSysInfo->sysDrvInfo[p][d].nFMVersion, 0, 16).toUpper());
+
+                        driverBoardItem->setExpanded(true);
+                    }
+                }
+            }
+            prtCardItem->setExpanded(true);
+        }
+    }
+    rootItem->setExpanded(true);
 }
 
 void PrintInfoTreeWidget::clearAll()

@@ -11,7 +11,11 @@
 #include "MoveCtlDialog.h"
 #include "AirInkDialog.h"
 #include "AdjParamDialog.h"
+#include "AdibCtrlDialog.h"
+#include "ImgLayerSetDialog.h"
 #include "../Inc/RYPrtCtler.h"
+#include <QElapsedTimer>
+#include <QThread>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QApplication>
@@ -21,66 +25,20 @@
 #include <QHBoxLayout>
 #include <windows.h> // For BITMAPFILEHEADER etc.
 
-// 全局变量定义（与MFC版本保持一致）
-RYUSR_PARAM g_sysParam;
-PRTJOB_ITEM g_testJob;
-PRTIMG_LAYER g_PrtImgLayer;
-RYCalbrationParam g_Calbration;
-LPPRINTER_INFO g_pSysInfo = nullptr;
-bool g_bPHValid[MAX_PH_CNT] = { false };
-
-/**
- * @brief 初始化图像图层信息
- */
-void InitImgLayerInfo()
-{
-    memset(&g_PrtImgLayer, 0, sizeof(PRTIMG_LAYER));
-    g_PrtImgLayer.nLayerIndex = -1;
-    g_PrtImgLayer.nXDPI = 720;
-    g_PrtImgLayer.nYDPI = 600;
-    g_PrtImgLayer.nColorCnts = 1;
-    g_PrtImgLayer.nGrayBits = 1;
-    g_PrtImgLayer.nPrtDir = 1;
-    g_PrtImgLayer.nValidClrMask = 0xFFFF;
-    g_PrtImgLayer.fLayerDensity = 1.0f;
-    g_PrtImgLayer.nPrtFlag = 1;
-}
-
-/**
- * @brief 初始化作业信息
- */
-void InitJobInfo()
-{
-    memset(&g_testJob, 0, sizeof(PRTJOB_ITEM));
-    g_testJob.nJobID = 0;
-    strncpy_s(g_testJob.szJobName, "Scan Demo", sizeof(g_testJob.szJobName));
-    g_testJob.fPrtXPos = 100.0f;
-    g_testJob.fClipHeight = 0.0f;
-    g_testJob.fClipWidth = 0.0f;
-    g_testJob.fOutXdpi = 600.0f;
-    g_testJob.fOutYdpi = 600.0f;
-    g_testJob.nFileType = 0;
-    g_testJob.nOutPixelBits = 1;
-}
-
-/**
- * @brief 初始化校准信息
- */
-void InitCalibrationInfo()
-{
-    memset(&g_Calbration, 0, sizeof(RYCalbrationParam));
-    g_Calbration.fPrtXPos = 10.0f;
-    g_Calbration.fPrtYPos = 0.0f;
-    g_Calbration.fStpSize = 0.0f;
-    g_Calbration.fxadjdpi = 600.0f;
-    g_Calbration.fXMaxPrtWidth = 600.0f;
-    g_Calbration.fXRunSpd = 10.0f;
-    g_Calbration.fYMaxPrtHeight = 600.0f;
-    g_Calbration.nAdjType = 0;
-    g_Calbration.nCtrlValue = 0;
-    g_Calbration.nGrayBits = 1;
-    g_Calbration.nPrtDir = 1;
-}
+// 外部全局变量声明（在main.cpp中定义）
+extern RYUSR_PARAM g_sysParam;
+extern PRTJOB_ITEM g_testJob;
+extern PRTIMG_LAYER g_PrtImgLayer;
+extern RYCalbrationParam g_Calbration;
+extern MOV_Config g_movConfig;
+extern LPPRINTER_INFO g_pSysInfo;
+extern bool g_bPHValid[MAX_PH_CNT];
+extern HANDLE g_PrtMutex;
+extern UINT g_nPHType;
+extern bool g_IsRoladWave;
+extern int PrtBuffNum;
+extern QByteArray g_prtData[MAX_COLORS]; // Global image data buffer
+extern int g_prtDataSize; // Global image data size
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -94,7 +52,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_stopMonitor(false)
     , m_enableInkWatch(false)
     , m_closeAutoCheck(false)
-    , m_prtDataSize(0)
     , m_jobImgLayerCounts(1)
     , m_prtRevColumn(0)
     , m_prtEncoderVal(0)
@@ -141,6 +98,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::onButtonFlashClicked);
     connect(ui->buttonResetEncoder, &QPushButton::clicked,
             this, &MainWindow::onButtonResetEncoderClicked);
+    connect(ui->buttonAdibCtl, &QPushButton::clicked,
+            this, &MainWindow::onButtonAdibCtlClicked);
     
     connect(ui->checkBoxInkWatch, &QCheckBox::toggled,
             this, &MainWindow::onCheckInkWatchToggled);
@@ -202,6 +161,9 @@ MainWindow::~MainWindow()
     if (m_paramManager) {
         m_paramManager->saveUserParam(g_sysParam);
         m_paramManager->saveCalibrationParam(g_Calbration);
+#ifdef RY_MOVE_CTL
+        m_paramManager->saveMoveParam(g_movConfig);
+#endif
     }
     
     delete ui;
@@ -215,13 +177,63 @@ void MainWindow::initSystem()
         m_paramManager->loadLayerParam(g_PrtImgLayer);
         m_paramManager->loadJobParam(g_testJob);
         m_paramManager->loadCalibrationParam(g_Calbration);
+#ifdef RY_MOVE_CTL
+        if (!m_paramManager->loadMoveParam(g_movConfig)) {
+            // Optionally initialize g_movConfig with defaults if loading fails
+            // For now, just log a warning or show a message
+            qWarning() << "Failed to load move parameters. Using default/uninitialized values.";
+        }
+#endif
+    }
+
+    // 应用程序路径
+    QString appPath = QApplication::applicationDirPath();
+    QByteArray appPathBytes = appPath.toLocal8Bit();
+
+    // 禁用窗口，防止用户操作
+    this->setEnabled(false);
+
+    // 打开设备
+    DEV_OpenDevice(reinterpret_cast<HWND>(winId()), (unsigned char*)appPathBytes.constData());
+
+    QElapsedTimer timer;
+    timer.start();
+    const int TIMEOUT_MS = 10 * 1000; // 10 seconds timeout
+
+    bool connected = false;
+    while (!DEV_DeviceIsConnected()) {
+        QThread::msleep(500); // Wait for 500ms
+        if (timer.elapsed() >= TIMEOUT_MS) {
+            QMessageBox::critical(this, tr("错误"), tr("设备连接超时，请检查设备连接！"));
+            this->close(); // Close application on connection failure
+            return;
+        }
+        // Process events to keep UI responsive (optional, as it's blocking anyway)
+        QCoreApplication::processEvents();
+    }
+    connected = true; // Device connected
+
+    // 更新系统参数
+    DEV_UpdateParam(&g_sysParam);
+
+    // 初始化设备
+    int nResult = DEV_InitDevice(ZERO_POSITION);
+    if (nResult < 0) {
+        QMessageBox::critical(this, tr("错误"), tr("初始化设备失败，错误码：%1").arg(nResult));
+        this->close(); // Close application on initialization failure
+        return;
+    } else if (nResult > 0) {
+        QMessageBox::information(this, tr("成功"), tr("设备初始化成功！"));
     }
     
+    // 重新启用窗口
+    this->setEnabled(true);
+
     // 初始化设备信息
     initDeviceInfo();
     
-    // 初始化系统参数
-    initSysParam();
+    // 移除 initSysParam()，因为DEV_UpdateParam已使用g_sysParam
+    // initSysParam();
     
     // 更新按钮状态
     updateButtonState();
@@ -232,7 +244,12 @@ void MainWindow::initDeviceInfo()
     // 初始化设备信息
     g_pSysInfo = DEV_GetDeviceInfo();
     if (g_pSysInfo) {
-        updateVTListInfo();
+        if (m_printInfoTree) {
+            m_printInfoTree->updateDeviceInfo();
+        }
+        if (m_drvInfoTree) {
+            m_drvInfoTree->updateVTListInfo();
+        }
     }
 }
 
@@ -286,16 +303,7 @@ void MainWindow::updatePrtState(uint state)
     ui->labelPrintState->setText(QString("打印状态: %1").arg(stateText));
 }
 
-void MainWindow::updateVTListInfo()
-{
-    if (!g_pSysInfo) {
-        return;
-    }
-    
-    // 更新VT列表信息（温度、电压等）
-    // 这里需要根据具体的树形控件API来实现
-    // m_drvInfoTree->updateDeviceInfo(g_pSysInfo);
-}
+
 
 void MainWindow::onButtonStartJobClicked()
 {
@@ -369,14 +377,26 @@ void MainWindow::onButtonLoadImageClicked()
     );
     
     if (!fileName.isEmpty()) {
-        if (getSrcData(fileName) == 0) {
+        int result = getSrcData(fileName);
+        if (result == 0) {
             m_prtFilePath = fileName;
             ui->lineEditFilePath->setText(fileName);
             m_imagePreview->showPreview(fileName);
             m_imageLoaded = true;
             updateButtonState();
+
+            ImgLayerSetDialog dlg(this);
+            dlg.exec();
         } else {
-            QMessageBox::critical(this, "错误", "加载图像文件失败！");
+            QString errorMessage;
+            if (result == -2) {
+                errorMessage = "图像文件未找到或无法打开！"; // File not found or couldn't be opened
+            } else if (result == -3) {
+                errorMessage = "图像格式无效或不支持的位深（仅支持1位BMP）！"; // Invalid BMP format or unsupported bit-depth
+            } else {
+                errorMessage = QString("加载图像文件失败，错误码：%1").arg(result); // Generic error
+            }
+            QMessageBox::critical(this, "错误", errorMessage);
         }
     }
 }
@@ -453,14 +473,30 @@ void MainWindow::onButtonSysParamClicked()
 
 void MainWindow::onButtonFlashClicked()
 {
-    // 闪喷功能
-    // ...
+    PrtRunInfo runInfo;
+    if (IDP_GetPrintState(&runInfo)) {
+        bool bFlashState = (runInfo.nPrtState == 3); // 3 is Flash state
+        if (!IDP_FlashPrtCtl(!bFlashState)) { // Toggle flash state
+            QMessageBox::critical(this, "错误", "切换闪喷状态失败！");
+        } else {
+            if (bFlashState) {
+                ui->buttonFlash->setText("开启闪喷"); // Assuming original text was "关闭闪喷"
+            } else {
+                ui->buttonFlash->setText("关闭闪喷"); // Assuming original text was "开启闪喷"
+            }
+        }
+    } else {
+        QMessageBox::critical(this, "错误", "获取打印状态失败，无法切换闪喷！");
+    }
 }
 
 void MainWindow::onButtonResetEncoderClicked()
 {
-    // 重置编码器
-    // DEV_ResetEncoder();
+    if (!DEV_ResetPrinterEncValue(ZERO_POSITION)) {
+        QMessageBox::critical(this, "错误", "重置编码器失败！");
+    } else {
+        QMessageBox::information(this, "成功", "编码器已重置。");
+    }
 }
 
 void MainWindow::onButtonMoveCtlClicked()
@@ -481,14 +517,18 @@ void MainWindow::onButtonAirInkClicked()
 
 void MainWindow::onButtonAdibCtlClicked()
 {
-    // ADIB控制对话框
-    // AdibCtrlDialog dlg(this);
-    // dlg.exec();
+    AdibCtrlDialog dlg(this);
+    dlg.exec();
 }
 
 void MainWindow::onCheckInkWatchToggled(bool checked)
 {
     m_enableInkWatch = checked;
+    if (!DEV_EnableInkWatch(checked, 0, 0)) { // Assuming 0,0 are default values or not critical
+        QMessageBox::critical(this, "错误", QString("墨水监测%1失败！").arg(checked ? "开启" : "关闭"));
+    } else {
+        QMessageBox::information(this, "成功", QString("墨水监测已%1。").arg(checked ? "开启" : "关闭"));
+    }
 }
 
 void MainWindow::onCheckCloseAutoCheckToggled(bool checked)
@@ -587,7 +627,7 @@ int MainWindow::getSrcData(const QString &filePath)
         }
         
         // Clear previous data
-        m_prtData[c].clear();
+        g_prtData[c].clear();
 
         int dataOffset = pfheader->bfOffBits;
         int dataSize = fileData.size() - dataOffset;
@@ -606,8 +646,8 @@ int MainWindow::getSrcData(const QString &filePath)
         }
         
         // Store the (potentially inverted) pixel data
-        m_prtData[c] = pixelData;
-        m_prtDataSize = dataSize; // Set the global size for the print thread
+        g_prtData[c] = pixelData;
+        g_prtDataSize = dataSize; // Set the global size for the print thread
 
         // Update global layer info from the first valid BMP file
         if (c == 0) {
